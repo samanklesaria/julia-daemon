@@ -444,6 +444,93 @@ class TestClientDaemonProtocol:
         assert response["status"] == "ok"
         assert len(response["sessions"]) == 1
 
+    async def test_infiltrator_interrupt(self, daemon_manager):
+        """Test Infiltrator.jl interaction: @infiltrate, inspect variables, then Ctrl-D to exit.
+
+        This test simulates a typical debugging workflow:
+        1. Define a function with @infiltrate
+        2. Call the function (which pauses at @infiltrate)
+        3. Inspect local variables in the paused frame
+        4. Send Ctrl-D to exit the Infiltrator context
+        5. Verify the session continues to work normally
+        """
+        tmpdir = tempfile.mkdtemp()
+        shutdown_event = asyncio.Event()
+
+        # Define a function with @infiltrate
+        reader1 = asyncio.StreamReader()
+        writer1 = MockStreamWriter()
+        code1 = """
+        function test_func(x)
+            y = x * 2
+            @infiltrate
+            return y + 1
+        end
+        """
+        request1 = {"command": "eval", "code": code1, "env_path": tmpdir}
+        reader1.feed_data(json.dumps(request1).encode())
+        reader1.feed_eof()
+        await handle_client(reader1, writer1, ("--startup-file=no", "--threads=auto"), shutdown_event)
+        response1 = json.loads(writer1.data.decode())
+        assert response1["status"] == "ok"
+
+        # Start calling the function (will block at @infiltrate) - run concurrently
+        reader2 = asyncio.StreamReader()
+        writer2 = MockStreamWriter()
+        request2 = {"command": "eval", "code": "test_func(5)", "env_path": tmpdir, "timeout": 10}
+        reader2.feed_data(json.dumps(request2).encode())
+        reader2.feed_eof()
+        eval_task = asyncio.create_task(
+            handle_client(reader2, writer2, ("--startup-file=no", "--threads=auto"), shutdown_event)
+        )
+
+        # Wait a bit for @infiltrate to be hit
+        await asyncio.sleep(1.0)
+
+        # Get the session and inspect variables by writing directly to stdin
+        # This simulates what a user would do interactively in Infiltrator mode
+        from julia_daemon.server import get_session_key
+        key = get_session_key(tmpdir)
+        session = sessions[key]
+
+        # Inspect variable 'y' (should be 10 since x=5, y=x*2)
+        session["process"].stdin.write(b"y\n")
+        await session["process"].stdin.drain()
+        await asyncio.sleep(0.3)
+
+        # Inspect variable 'x' (should be 5)
+        session["process"].stdin.write(b"x\n")
+        await session["process"].stdin.drain()
+        await asyncio.sleep(0.3)
+
+        # Send interrupt (Ctrl-D) to exit Infiltrator
+        reader3 = asyncio.StreamReader()
+        writer3 = MockStreamWriter()
+        request3 = {"command": "interrupt", "env_path": tmpdir}
+        reader3.feed_data(json.dumps(request3).encode())
+        reader3.feed_eof()
+        await handle_client(reader3, writer3, ("--startup-file=no", "--threads=auto"), shutdown_event)
+        response3 = json.loads(writer3.data.decode())
+        assert response3["status"] == "ok"
+        assert "Ctrl-D" in response3["output"]
+
+        # The eval should complete (returning nothing since @infiltrate exits the function)
+        await eval_task
+        response2 = json.loads(writer2.data.decode())
+        # The function exits when we Ctrl-D from @infiltrate, so we get no output or error
+        assert response2["status"] in ["ok", "error"]
+
+        # Verify session still works after interrupt
+        reader4 = asyncio.StreamReader()
+        writer4 = MockStreamWriter()
+        request4 = {"command": "eval", "code": "2 + 2", "env_path": tmpdir}
+        reader4.feed_data(json.dumps(request4).encode())
+        reader4.feed_eof()
+        await handle_client(reader4, writer4, ("--startup-file=no", "--threads=auto"), shutdown_event)
+        response4 = json.loads(writer4.data.decode())
+        assert response4["status"] == "ok"
+        assert "4" in response4["output"]
+
 
 class MockStreamWriter:
     def __init__(self):

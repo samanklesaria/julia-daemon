@@ -39,6 +39,7 @@ def main():
     parser.add_argument("--restart", action="store_true", help="Restart the session")
     parser.add_argument("--list", action="store_true", help="List active sessions")
     parser.add_argument("--shutdown", action="store_true", help="Shutdown the daemon")
+    parser.add_argument("--interrupt", action="store_true", help="Send Ctrl-D to the Julia process")
 
     args = parser.parse_args()
 
@@ -64,6 +65,16 @@ def main():
             print(f"Error: {response.get('output')}", file=sys.stderr)
             sys.exit(1)
         sys.exit(0)
+
+    if args.interrupt:
+        request = {"command": "interrupt"}
+        if args.env_path:
+            request["env_path"] = args.env_path
+        else:
+            request["env_path"] = os.getcwd()
+        response = send_request(request)
+        print(response.get("output", ""))
+        sys.exit(0 if response["status"] == "ok" else 1)
 
     if args.restart:
         request = {"command": "restart"}

@@ -43,6 +43,9 @@ julia-eval --timeout 120 "expensive_computation()"
 # Restart a session
 julia-eval --restart --env-path /path/to/project
 
+# Send Ctrl-D to Julia process (useful for exiting Infiltrator.jl debugging)
+julia-eval --interrupt
+
 # Shutdown daemon
 julia-eval --shutdown
 ```
@@ -53,6 +56,7 @@ julia-eval --shutdown
 - `--env-path PATH` — Julia project directory path (omit to use the current directory)
 - `--timeout SECONDS` — Timeout in seconds (default: 60, 0 for no timeout, auto-disabled for Pkg operations)
 - `--restart` — Restart the session
+- `--interrupt` — Send Ctrl-D to the Julia process (useful for exiting Infiltrator.jl debugging sessions)
 - `--list` — List active sessions
 - `--shutdown` — Shutdown the daemon
 
@@ -80,4 +84,16 @@ julia-eval --env-path ~/project1 "x = 1"
 julia-eval --env-path ~/project2 "x = 2"
 julia-eval --env-path ~/project1 "x"  # displays 1
 julia-eval --env-path ~/project2 "x"  # displays 2
+```
+
+Debugging with Infiltrator.jl:
+
+```bash
+# In one terminal, call a function with @infiltrate
+julia-eval "function debug_me(x); y = x * 2; @infiltrate; return y + 1; end; debug_me(5)"
+# This will pause at @infiltrate - the command will appear to hang
+
+# In another terminal, send Ctrl-D to exit the Infiltrator context
+julia-eval --interrupt
+# The original command will now complete
 ```

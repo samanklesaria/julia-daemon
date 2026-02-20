@@ -188,7 +188,19 @@ async def handle_client(reader, writer, julia_args, shutdown_event):
         command = request.get("command")
         response = {}
 
-        if command == "eval":
+        if command == "interrupt":
+            env_path = request.get("env_path")
+            key = get_session_key(env_path)
+            if key not in sessions or sessions[key]["process"].returncode is not None:
+                response = {"status": "error", "output": "No active session for this environment"}
+            else:
+                session = sessions[key]
+                async with session["lock"]:
+                    session["process"].stdin.write(b"\x04")
+                    await session["process"].stdin.drain()
+                response = {"status": "ok", "output": "Sent Ctrl-D to Julia process"}
+
+        elif command == "eval":
             code = request["code"]
             env_path = request.get("env_path")
             timeout = request.get("timeout")
