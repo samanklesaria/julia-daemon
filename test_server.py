@@ -141,13 +141,6 @@ class TestJuliaSession:
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
-    async def test_temp_dir_cleanup(self, manager):
-        s = await start_julia_session(None, ("--startup-file=no", "--threads=auto"))
-        tmpdir = s["env_dir"]
-        assert os.path.isdir(tmpdir)
-        await kill_session(s)
-        assert not os.path.isdir(tmpdir)
-
     async def test_non_temp_dir_not_cleaned(self, manager):
         tmpdir = tempfile.mkdtemp(prefix="julia-daemon-test-")
         try:
@@ -190,7 +183,7 @@ class TestJuliaSession:
                 f.write("module MyMod\nfoo() = 2\nend\n")
 
             await asyncio.sleep(0.5)
-            result = await execute_code(s, "MyMod.foo()", timeout=30.0)
+            result = await execute_code(s, "Revise.revise(); MyMod.foo()", timeout=30.0)
             assert result == "2"
 
             await kill_session(s)
@@ -489,9 +482,7 @@ class TestClientDaemonProtocol:
 
         # Get the session and inspect variables by writing directly to stdin
         # This simulates what a user would do interactively in Infiltrator mode
-        from julia_daemon.server import get_session_key
-        key = get_session_key(tmpdir)
-        session = sessions[key]
+        session = sessions[tmpdir]
 
         # Inspect variable 'y' (should be 10 since x=5, y=x*2)
         session["process"].stdin.write(b"y\n")

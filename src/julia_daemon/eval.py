@@ -79,7 +79,9 @@ def main():
     if args.restart:
         request = {"command": "restart"}
         if args.env_path:
-            request["env_path"] = args.env_path
+            request["env_path"] = str(Path(args.env_path).resolve())
+        else:
+            request["env_path"] = os.getcwd()
         response = send_request(request)
         print(response.get("output", ""))
         sys.exit(0 if response["status"] == "ok" else 1)
@@ -91,7 +93,7 @@ def main():
 
     request = {"command": "eval", "code": code}
     if args.env_path:
-        request["env_path"] = Path.resolve(args.env_path)
+        request["env_path"] = str(Path(args.env_path).resolve())
     else:
         request["env_path"] = os.getcwd()
     if args.timeout is not None:

@@ -20,15 +20,8 @@ SOCKET_PATH = Path(tempfile.gettempdir()) / "julia-daemon.sock"
 sessions = {}
 session_locks = {}
 
-def get_session_key(env_path):
-    if env_path is None:
-        return "__temp__"
-    return str(Path(env_path).resolve())
-
 def is_test_env(env_path):
-    if env_path is None:
-        return False
-    return Path(env_path).resolve().name == "test"
+    return Path(env_path).name == "test"
 
 def get_project_path(env_path, is_test):
     if is_test:
@@ -46,14 +39,8 @@ async def start_julia_session(env_path, julia_args):
         raise RuntimeError("Julia not found in PATH. Install from https://julialang.org/downloads/")
 
     is_test = is_test_env(env_path)
-    is_temp = env_path is None
-
-    if is_temp:
-        env_dir = tempfile.mkdtemp(prefix="julia-daemon-")
-        project_path = env_dir
-    else:
-        env_dir = str(Path(env_path).resolve())
-        project_path = get_project_path(env_dir, is_test)
+    env_dir = env_path
+    project_path = get_project_path(env_dir, is_test)
 
     sentinel = f"__JULIA_DAEMON_{uuid.uuid4().hex}__"
 
@@ -79,7 +66,6 @@ async def start_julia_session(env_path, julia_args):
         "process": process,
         "sentinel": sentinel,
         "env_dir": env_dir,
-        "is_temp": is_temp,
         "lock": asyncio.Lock(),
     }
 
@@ -136,11 +122,9 @@ async def kill_session(session):
     if session["process"].returncode is None:
         session["process"].kill()
         await session["process"].wait()
-    if session["is_temp"] and os.path.isdir(session["env_dir"]):
-        shutil.rmtree(session["env_dir"], ignore_errors=True)
 
 async def get_or_create_session(env_path, julia_args):
-    key = get_session_key(env_path)
+    key = env_path
 
     if key in sessions and sessions[key]["process"].returncode is None:
         return sessions[key]
@@ -160,8 +144,7 @@ async def get_or_create_session(env_path, julia_args):
         sessions[key] = session
         return session
 
-async def restart_session(env_path):
-    key = get_session_key(env_path)
+async def restart_session(key):
     if key in sessions:
         await kill_session(sessions[key])
         del sessions[key]
@@ -172,7 +155,6 @@ def list_sessions():
         result.append({
             "env_path": session["env_dir"],
             "alive": session["process"].returncode is None,
-            "temp": session["is_temp"],
         })
     return result
 
@@ -189,8 +171,7 @@ async def handle_client(reader, writer, julia_args, shutdown_event):
         response = {}
 
         if command == "interrupt":
-            env_path = request.get("env_path")
-            key = get_session_key(env_path)
+            key = request.get("env_path")
             if key not in sessions or sessions[key]["process"].returncode is not None:
                 response = {"status": "error", "output": "No active session for this environment"}
             else:
@@ -215,7 +196,7 @@ async def handle_client(reader, writer, julia_args, shutdown_event):
                 output = await execute_code(session, code, effective_timeout)
                 response = {"status": "ok", "output": output if output else "(no output)"}
             except RuntimeError as e:
-                key = get_session_key(env_path)
+                key = env_path
                 if key in sessions and sessions[key]["process"].returncode is not None:
                     del sessions[key]
                 response = {"status": "error", "output": str(e)}
