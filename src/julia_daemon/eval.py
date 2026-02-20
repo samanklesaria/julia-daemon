@@ -80,7 +80,7 @@ def main():
 
     request = {"command": "eval", "code": code}
     if args.env_path:
-        request["env_path"] = args.env_path
+        request["env_path"] = Path.resolve(args.env_path)
     else:
         request["env_path"] = os.getcwd()
     if args.timeout is not None:

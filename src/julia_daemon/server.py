@@ -69,7 +69,7 @@ async def start_julia_session(env_path, julia_args):
     )
 
     await execute_raw(process, sentinel, "", 120.0)
-    await execute_raw(process, sentinel, "try; using Revise; catch; end", 120.0)
+    await execute_raw(process, sentinel, "using Revise, Infiltrator", 120.0)
 
     init = get_init_code(is_test)
     if init:
@@ -126,9 +126,7 @@ async def execute_code(session, code, timeout):
 
         hex_encoded = code.encode().hex()
         wrapped = (
-            f'try; Revise.revise(); catch; end;'
-            f'include_string(Main, String(hex2bytes("{hex_encoded}")));'
-            f'nothing'
+            f'include_string(Main, String(hex2bytes("{hex_encoded}")))'
         )
         return await execute_raw(session["process"], session["sentinel"], wrapped, timeout)
 
