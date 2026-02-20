@@ -57,7 +57,7 @@ def main():
                 print("Active Julia sessions:")
                 for s in sessions:
                     status = "alive" if s["alive"] else "dead"
-                    label = f"{s['env_path']} (temp)" if s["temp"] else s["env_path"]
+                    label = s["env_path"]
                     log = f" log={s['log_file']}" if "log_file" in s else ""
                     print(f"  {label}: {status}{log}")
         else:
@@ -81,6 +81,8 @@ def main():
     request = {"command": "eval", "code": code}
     if args.env_path:
         request["env_path"] = args.env_path
+    else:
+        request["env_path"] = os.getcwd()
     if args.timeout is not None:
         request["timeout"] = args.timeout
 

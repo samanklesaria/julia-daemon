@@ -50,7 +50,7 @@ julia-eval --shutdown
 ## Options
 
 - `code` — Julia code to evaluate (or read from stdin if omitted)
-- `--env-path PATH` — Julia project directory path (omit for temporary environment)
+- `--env-path PATH` — Julia project directory path (omit to use the current directory)
 - `--timeout SECONDS` — Timeout in seconds (default: 60, 0 for no timeout, auto-disabled for Pkg operations)
 - `--restart` — Restart the session
 - `--list` — List active sessions
@@ -58,7 +58,7 @@ julia-eval --shutdown
 
 ## Details
 
-- Each unique `env_path` gets its own isolated Julia session. Omitting `env_path` uses a temporary session that is cleaned up on daemon shutdown.
+- Each unique `env_path` gets its own isolated Julia session. 
 - If `env_path` ends in `/test/`, the parent directory is used as the project and `TestEnv` is activated automatically. For this to work, `TestEnv` must be installed in the base environment.
 - Julia is launched with `--threads=auto` and `--startup-file=no` by default. Pass custom Julia CLI flags after `server.py` to override these defaults entirely.
 - The daemon communicates via Unix socket at `/tmp/julia-daemon.sock`

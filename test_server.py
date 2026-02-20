@@ -9,7 +9,7 @@ import uuid
 import pytest
 import pytest_asyncio
 
-from julia_server import JuliaSession, SessionManager, TEMP_SESSION_KEY, SOCKET_PATH, handle_client
+from julia_daemon.server import JuliaSession, SessionManager, TEMP_SESSION_KEY, SOCKET_PATH, handle_client
 
 
 # -- Helpers --
@@ -348,7 +348,7 @@ class TestSessionManager:
 class TestTimeoutDetection:
     """Test that PKG_PATTERN correctly identifies Pkg/using/import code."""
 
-    from julia_server import PKG_PATTERN
+    from julia_daemon.server import PKG_PATTERN
 
     @pytest.mark.parametrize(
         "code",
