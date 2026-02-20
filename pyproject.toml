@@ -10,8 +10,8 @@ requires = ["uv_build >= 0.10.0, <0.11.0"]
 build-backend = "uv_build"
 
 [project.scripts]
-julia-daemon = "julia_daemon.server:main"
-julia-eval = "julia_daemon.julia_eval:main"
+julia-server = "julia_daemon.server:main"
+julia-eval = "julia_daemon.eval:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
