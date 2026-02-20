@@ -1,29 +1,27 @@
 import asyncio
+import json
 import os
 import shutil
+import socket
 import tempfile
 import uuid
-from contextlib import asynccontextmanager
 
 import pytest
 import pytest_asyncio
 
-from mcp.shared.memory import create_connected_server_and_client_session
-
-import server as server_mod
-from server import JuliaSession, SessionManager, TEMP_SESSION_KEY
+from julia_server import JuliaSession, SessionManager, TEMP_SESSION_KEY, SOCKET_PATH, handle_client
 
 
 # -- Helpers --
 
 
 def make_sentinel() -> str:
-    return f"__JULIA_MCP_{uuid.uuid4().hex}__"
+    return f"__JULIA_DAEMON_{uuid.uuid4().hex}__"
 
 
 @pytest_asyncio.fixture
 async def session():
-    tmpdir = tempfile.mkdtemp(prefix="julia-mcp-test-")
+    tmpdir = tempfile.mkdtemp(prefix="julia-daemon-test-")
     s = JuliaSession(tmpdir, make_sentinel(), is_temp=True)
     await s.start()
     yield s
@@ -130,7 +128,7 @@ class TestJuliaSession:
         assert session.is_alive()
 
     async def test_kill(self):
-        tmpdir = tempfile.mkdtemp(prefix="julia-mcp-test-")
+        tmpdir = tempfile.mkdtemp(prefix="julia-daemon-test-")
         s = JuliaSession(tmpdir, make_sentinel(), is_temp=True)
         await s.start()
         assert s.is_alive()
@@ -139,7 +137,7 @@ class TestJuliaSession:
         assert not os.path.exists(tmpdir)
 
     async def test_temp_dir_cleanup(self):
-        tmpdir = tempfile.mkdtemp(prefix="julia-mcp-test-")
+        tmpdir = tempfile.mkdtemp(prefix="julia-daemon-test-")
         s = JuliaSession(tmpdir, make_sentinel(), is_temp=True)
         await s.start()
         assert os.path.isdir(tmpdir)
@@ -147,7 +145,7 @@ class TestJuliaSession:
         assert not os.path.isdir(tmpdir)
 
     async def test_non_temp_dir_not_cleaned(self):
-        tmpdir = tempfile.mkdtemp(prefix="julia-mcp-test-")
+        tmpdir = tempfile.mkdtemp(prefix="julia-daemon-test-")
         s = JuliaSession(tmpdir, make_sentinel(), is_temp=False)
         await s.start()
         await s.kill()
@@ -162,7 +160,7 @@ class TestJuliaSession:
 
     async def test_revise_picks_up_changes(self):
         # Create a minimal Julia package in a temp dir
-        pkg_dir = tempfile.mkdtemp(prefix="julia-mcp-test-revise-")
+        pkg_dir = tempfile.mkdtemp(prefix="julia-daemon-test-revise-")
         src_dir = os.path.join(pkg_dir, "src")
         os.makedirs(src_dir)
 
@@ -216,8 +214,8 @@ class TestSessionManager:
         assert s1 is s2
 
     async def test_separate_envs(self, manager: SessionManager):
-        tmpdir1 = tempfile.mkdtemp(prefix="julia-mcp-test-")
-        tmpdir2 = tempfile.mkdtemp(prefix="julia-mcp-test-")
+        tmpdir1 = tempfile.mkdtemp(prefix="julia-daemon-test-")
+        tmpdir2 = tempfile.mkdtemp(prefix="julia-daemon-test-")
         try:
             s1 = await manager.get_or_create(tmpdir1)
             s2 = await manager.get_or_create(tmpdir2)
@@ -256,7 +254,7 @@ class TestSessionManager:
         assert sessions[0]["temp"] is True
 
     async def test_list_sessions_contains_env_path(self, manager: SessionManager):
-        tmpdir = os.path.realpath(tempfile.mkdtemp(prefix="julia-mcp-test-"))
+        tmpdir = os.path.realpath(tempfile.mkdtemp(prefix="julia-daemon-test-"))
         try:
             await manager.get_or_create(tmpdir)
             sessions = manager.list_sessions()
@@ -268,7 +266,7 @@ class TestSessionManager:
             os.rmdir(tmpdir)
 
     async def test_list_sessions_test_dir_shows_test_path(self, manager: SessionManager):
-        tmpdir = os.path.realpath(tempfile.mkdtemp(prefix="julia-mcp-test-"))
+        tmpdir = os.path.realpath(tempfile.mkdtemp(prefix="julia-daemon-test-"))
         test_dir = os.path.join(tmpdir, "test")
         os.makedirs(test_dir)
         try:
@@ -290,7 +288,7 @@ class TestSessionManager:
         assert s2.is_alive()
 
     async def test_test_dir_uses_parent_project(self, manager: SessionManager):
-        tmpdir = os.path.realpath(tempfile.mkdtemp(prefix="julia-mcp-test-"))
+        tmpdir = os.path.realpath(tempfile.mkdtemp(prefix="julia-daemon-test-"))
         test_dir = os.path.join(tmpdir, "test")
         os.makedirs(test_dir)
         try:
@@ -303,7 +301,7 @@ class TestSessionManager:
             shutil.rmtree(tmpdir)
 
     async def test_test_dir_separate_from_parent(self, manager: SessionManager):
-        tmpdir = os.path.realpath(tempfile.mkdtemp(prefix="julia-mcp-test-"))
+        tmpdir = os.path.realpath(tempfile.mkdtemp(prefix="julia-daemon-test-"))
         test_dir = os.path.join(tmpdir, "test")
         os.makedirs(test_dir)
         try:
@@ -315,7 +313,7 @@ class TestSessionManager:
             shutil.rmtree(tmpdir)
 
     async def test_shutdown_cleans_all(self, manager: SessionManager):
-        tmpdir = tempfile.mkdtemp(prefix="julia-mcp-test-")
+        tmpdir = tempfile.mkdtemp(prefix="julia-daemon-test-")
         await manager.get_or_create(None)
         await manager.get_or_create(tmpdir)
         assert len(manager.list_sessions()) == 2
@@ -350,7 +348,7 @@ class TestSessionManager:
 class TestTimeoutDetection:
     """Test that PKG_PATTERN correctly identifies Pkg/using/import code."""
 
-    from server import PKG_PATTERN
+    from julia_server import PKG_PATTERN
 
     @pytest.mark.parametrize(
         "code",
@@ -377,178 +375,98 @@ class TestTimeoutDetection:
         assert not self.PKG_PATTERN.search(code)
 
 
-# -- End-to-end MCP tool tests --
+# -- End-to-end client-daemon tests --
 
 
-@asynccontextmanager
-async def mcp_client_session():
-    """Create a fresh MCP client+server with its own SessionManager."""
-    fresh_manager = SessionManager()
-    orig_manager = server_mod.manager
-    server_mod.manager = fresh_manager
-    try:
-        async with create_connected_server_and_client_session(
-            server_mod.mcp._mcp_server
-        ) as client:
-            yield client
-    finally:
-        await fresh_manager.shutdown()
-        server_mod.manager = orig_manager
+@pytest_asyncio.fixture
+async def daemon_manager():
+    """Create a SessionManager for daemon testing."""
+    m = SessionManager()
+    yield m
+    await m.shutdown()
 
 
-class TestMCPTools:
-    async def test_eval_basic(self):
-        async with mcp_client_session() as client:
-            result = await client.call_tool("julia_eval", {"code": "println(1 + 1)"})
-            assert not result.isError
-            assert result.content[0].text == "2"
+class TestClientDaemonProtocol:
+    async def test_eval_basic(self, daemon_manager: SessionManager):
+        request = {"command": "eval", "code": "println(1 + 1)"}
+        reader = asyncio.StreamReader()
+        reader.feed_data(json.dumps(request).encode())
+        reader.feed_eof()
 
-    async def test_eval_persistence(self):
-        async with mcp_client_session() as client:
-            await client.call_tool("julia_eval", {"code": "x = 42"})
-            result = await client.call_tool("julia_eval", {"code": "println(x + 1)"})
-            assert result.content[0].text == "43"
+        writer = MockStreamWriter()
+        await handle_client(reader, writer, daemon_manager)
 
-    async def test_eval_error(self):
-        async with mcp_client_session() as client:
-            result = await client.call_tool("julia_eval", {"code": 'error("boom")'})
-            assert not result.isError  # tool itself succeeds, output contains error
-            assert "boom" in result.content[0].text
+        response = json.loads(writer.data.decode())
+        assert response["status"] == "ok"
+        assert response["output"] == "2"
 
-    async def test_eval_no_output(self):
-        async with mcp_client_session() as client:
-            result = await client.call_tool("julia_eval", {"code": "nothing"})
-            assert result.content[0].text == "(no output)"
+    async def test_eval_persistence(self, daemon_manager: SessionManager):
+        request1 = {"command": "eval", "code": "x = 42"}
+        reader1 = asyncio.StreamReader()
+        reader1.feed_data(json.dumps(request1).encode())
+        reader1.feed_eof()
+        writer1 = MockStreamWriter()
+        await handle_client(reader1, writer1, daemon_manager)
 
-    async def test_list_sessions_empty(self):
-        async with mcp_client_session() as client:
-            result = await client.call_tool("julia_list_sessions", {})
-            assert "No active" in result.content[0].text
+        request2 = {"command": "eval", "code": "println(x)"}
+        reader2 = asyncio.StreamReader()
+        reader2.feed_data(json.dumps(request2).encode())
+        reader2.feed_eof()
+        writer2 = MockStreamWriter()
+        await handle_client(reader2, writer2, daemon_manager)
 
-    async def test_list_sessions_after_eval(self):
-        async with mcp_client_session() as client:
-            await client.call_tool("julia_eval", {"code": "1"})
-            result = await client.call_tool("julia_list_sessions", {})
-            assert "alive" in result.content[0].text
-            assert "(temp)" in result.content[0].text
+        response = json.loads(writer2.data.decode())
+        assert response["status"] == "ok"
+        assert response["output"] == "42"
 
-    async def test_list_sessions_shows_env_path(self):
-        async with mcp_client_session() as client:
-            tmpdir = os.path.realpath(tempfile.mkdtemp(prefix="julia-mcp-test-"))
-            try:
-                await client.call_tool("julia_eval", {"code": "1", "env_path": tmpdir})
-                result = await client.call_tool("julia_list_sessions", {})
-                text = result.content[0].text
-                assert tmpdir in text
-                assert "(temp)" not in text
-            finally:
-                os.rmdir(tmpdir)
+    async def test_list_empty(self, daemon_manager: SessionManager):
+        request = {"command": "list"}
+        reader = asyncio.StreamReader()
+        reader.feed_data(json.dumps(request).encode())
+        reader.feed_eof()
 
-    async def test_list_sessions_temp_shows_path_and_label(self):
-        async with mcp_client_session() as client:
-            await client.call_tool("julia_eval", {"code": "1"})
-            result = await client.call_tool("julia_list_sessions", {})
-            text = result.content[0].text
-            # Output should contain both a path and the (temp) marker
-            assert "(temp)" in text
-            assert os.sep in text  # contains a path
+        writer = MockStreamWriter()
+        await handle_client(reader, writer, daemon_manager)
 
-    async def test_list_sessions_test_dir_shows_test_path(self):
-        async with mcp_client_session() as client:
-            tmpdir = os.path.realpath(tempfile.mkdtemp(prefix="julia-mcp-test-"))
-            test_dir = os.path.join(tmpdir, "test")
-            os.makedirs(test_dir)
-            try:
-                await client.call_tool("julia_eval", {"code": "1", "env_path": test_dir})
-                result = await client.call_tool("julia_list_sessions", {})
-                text = result.content[0].text
-                # Should show the original test dir path the user provided
-                assert test_dir in text
-            finally:
-                shutil.rmtree(tmpdir)
+        response = json.loads(writer.data.decode())
+        assert response["status"] == "ok"
+        assert response["sessions"] == []
 
-    async def test_restart(self):
-        async with mcp_client_session() as client:
-            await client.call_tool("julia_eval", {"code": "x = 99"})
-            await client.call_tool("julia_restart", {})
+    async def test_list_after_eval(self, daemon_manager: SessionManager):
+        request1 = {"command": "eval", "code": "x = 1"}
+        reader1 = asyncio.StreamReader()
+        reader1.feed_data(json.dumps(request1).encode())
+        reader1.feed_eof()
+        writer1 = MockStreamWriter()
+        await handle_client(reader1, writer1, daemon_manager)
 
-            result = await client.call_tool("julia_list_sessions", {})
-            assert "No active" in result.content[0].text
+        request2 = {"command": "list"}
+        reader2 = asyncio.StreamReader()
+        reader2.feed_data(json.dumps(request2).encode())
+        reader2.feed_eof()
+        writer2 = MockStreamWriter()
+        await handle_client(reader2, writer2, daemon_manager)
 
-            result = await client.call_tool(
-                "julia_eval", {"code": "try; x; catch e; println(e); end"}
-            )
-            assert "UndefVarError" in result.content[0].text
+        response = json.loads(writer2.data.decode())
+        assert response["status"] == "ok"
+        assert len(response["sessions"]) == 1
+        assert response["sessions"][0]["temp"] is True
+        assert response["sessions"][0]["alive"] is True
 
-    async def test_eval_cwd_regular(self):
-        async with mcp_client_session() as client:
-            tmpdir = os.path.realpath(tempfile.mkdtemp(prefix="julia-mcp-test-"))
-            try:
-                result = await client.call_tool(
-                    "julia_eval", {"code": "println(pwd())", "env_path": tmpdir}
-                )
-                assert result.content[0].text == tmpdir
-                result = await client.call_tool(
-                    "julia_eval",
-                    {"code": "println(Base.active_project())", "env_path": tmpdir},
-                )
-                assert tmpdir in result.content[0].text
-            finally:
-                os.rmdir(tmpdir)
 
-    async def test_eval_cwd_test_dir(self):
-        async with mcp_client_session() as client:
-            tmpdir = os.path.realpath(tempfile.mkdtemp(prefix="julia-mcp-test-"))
-            test_dir = os.path.join(tmpdir, "test")
-            os.makedirs(test_dir)
-            try:
-                result = await client.call_tool(
-                    "julia_eval", {"code": "println(pwd())", "env_path": test_dir}
-                )
-                assert result.content[0].text == test_dir
-                result = await client.call_tool(
-                    "julia_eval",
-                    {"code": "println(Base.active_project())", "env_path": test_dir},
-                )
-                # --project= points to parent, not the test dir
-                assert tmpdir in result.content[0].text
-            finally:
-                shutil.rmtree(tmpdir)
+class MockStreamWriter:
+    def __init__(self):
+        self.data = b""
+        self.closed = False
 
-    async def test_eval_timeout(self):
-        async with mcp_client_session() as client:
-            result = await client.call_tool(
-                "julia_eval", {"code": "sleep(60)", "timeout": 2.0}
-            )
-            assert "timed out" in result.content[0].text
+    def write(self, data):
+        self.data += data
 
-    async def test_eval_timeout_includes_partial_output(self):
-        async with mcp_client_session() as client:
-            code = 'println("before_timeout"); sleep(60)'
-            result = await client.call_tool(
-                "julia_eval", {"code": code, "timeout": 1.0}
-            )
-            text = result.content[0].text
-            assert "timed out" in text
-            assert "before_timeout" in text
+    async def drain(self):
+        pass
 
-    async def test_eval_timeout_multiple_lines_partial_output(self):
-        async with mcp_client_session() as client:
-            code = 'for i in 1:5; println("line_$i"); end; sleep(60)'
-            result = await client.call_tool(
-                "julia_eval", {"code": code, "timeout": 1.0}
-            )
-            text = result.content[0].text
-            assert "timed out" in text
-            for i in range(1, 6):
-                assert f"line_{i}" in text
+    def close(self):
+        self.closed = True
 
-    async def test_eval_timeout_no_output_no_section(self):
-        """When nothing was printed before timeout, don't show an empty output section."""
-        async with mcp_client_session() as client:
-            result = await client.call_tool(
-                "julia_eval", {"code": "sleep(60)", "timeout": 1.0}
-            )
-            text = result.content[0].text
-            assert "timed out" in text
-            assert "Output before timeout" not in text
+    async def wait_closed(self):
+        pass

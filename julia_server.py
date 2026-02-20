@@ -1,8 +1,12 @@
+#!/usr/bin/env python3
+
 import asyncio
 import atexit
+import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -11,14 +15,11 @@ import uuid
 from io import TextIOWrapper
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
-
 DEFAULT_TIMEOUT = 60.0
 DEFAULT_JULIA_ARGS = ("--startup-file=no", "--threads=auto")
 PKG_PATTERN = re.compile(r"\bPkg\.")
 TEMP_SESSION_KEY = "__temp__"
-
-mcp = FastMCP("julia")
+SOCKET_PATH = Path(tempfile.gettempdir()) / "julia-daemon.sock"
 
 
 class JuliaSession:
@@ -73,20 +74,11 @@ class JuliaSession:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            limit=64 * 1024 * 1024,  # 64 MB readline buffer
+            limit=64 * 1024 * 1024,
         )
 
-        # Wait for readiness
-        await self._execute_raw(
-            "",
-            timeout=120.0,  # generous startup timeout
-        )
-
-        # Auto-load Revise so code changes are picked up without restarting
-        await self._execute_raw(
-            "try; using Revise; catch; end",
-            timeout=120.0,
-        )
+        await self._execute_raw("", timeout=120.0)
+        await self._execute_raw("try; using Revise; catch; end", timeout=120.0)
 
         if self.init_code:
             await self._execute_raw(self.init_code, timeout=None)
@@ -98,7 +90,6 @@ class JuliaSession:
         async with self.lock:
             if not self.is_alive():
                 raise RuntimeError("Julia session has died unexpectedly")
-            # hex-encode to avoid string escaping issues; include_string for sequential parse-eval (macros work)
             hex_encoded = code.encode().hex()
             wrapped = (
                 f'try; Revise.revise(); catch; end;'
@@ -141,7 +132,6 @@ class JuliaSession:
                 if line == self.sentinel:
                     break
                 lines.append(line)
-            # The extra \n before sentinel may leave a trailing empty line
             if lines and lines[-1] == "":
                 lines.pop()
             return "\n".join(lines)
@@ -174,7 +164,7 @@ class SessionManager:
         self._sessions: dict[str, JuliaSession] = {}
         self._create_locks: dict[str, asyncio.Lock] = {}
         self._global_lock = asyncio.Lock()
-        self._log_dir = tempfile.mkdtemp(prefix="julia-mcp-logs-")
+        self._log_dir = tempfile.mkdtemp(prefix="julia-daemon-logs-")
         self._log_files: dict[str, TextIOWrapper] = {}
         atexit.register(self._cleanup_logs)
 
@@ -201,31 +191,26 @@ class SessionManager:
     async def get_or_create(self, env_path: str | None) -> JuliaSession:
         key = self._key(env_path)
 
-        # Fast path
         if key in self._sessions and self._sessions[key].is_alive():
             return self._sessions[key]
 
-        # Get per-key creation lock
         async with self._global_lock:
             if key not in self._create_locks:
                 self._create_locks[key] = asyncio.Lock()
             create_lock = self._create_locks[key]
 
         async with create_lock:
-            # Double-check
             if key in self._sessions and self._sessions[key].is_alive():
                 return self._sessions[key]
 
-            # Clean up dead session
             if key in self._sessions:
                 await self._sessions[key].kill()
                 del self._sessions[key]
 
-            # Create new session
-            sentinel = f"__JULIA_MCP_{uuid.uuid4().hex}__"
+            sentinel = f"__JULIA_DAEMON_{uuid.uuid4().hex}__"
             is_temp = env_path is None
             if is_temp:
-                env_dir = tempfile.mkdtemp(prefix="julia-mcp-")
+                env_dir = tempfile.mkdtemp(prefix="julia-daemon-")
                 is_test = False
             else:
                 resolved = Path(env_path).resolve()
@@ -267,82 +252,109 @@ class SessionManager:
         self._cleanup_logs()
 
 
-manager = SessionManager()
-
-
-@mcp.tool()
-async def julia_eval(
-    code: str,
-    env_path: str | None = None,
-    timeout: float | None = None,
-) -> str:
-    """ALWAYS use this tool to run Julia code. NEVER run julia via command line.
-
-    Persistent REPL session with state preserved between calls.
-    Each env_path gets its own session, started lazily.
-
-    Args:
-        code: Julia code to evaluate. Use display(...)/println(...) to see output.
-        env_path: Julia project directory path. Omit for a temporary environment.
-        timeout: Seconds (default: 60). Auto-disabled for Pkg operations.
-    """
-    if timeout is None:
-        effective_timeout: float | None = (
-            None if PKG_PATTERN.search(code) else DEFAULT_TIMEOUT
-        )
-    else:
-        effective_timeout = timeout if timeout > 0 else None
-
+async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, manager: SessionManager, shutdown_event: asyncio.Event = None):
     try:
-        session = await manager.get_or_create(env_path)
-        output = await session.execute(code, timeout=effective_timeout)
-        return output if output else "(no output)"
-    except RuntimeError as e:
-        # Clean up dead session so next call starts fresh
-        key = manager._key(env_path)
-        if key in manager._sessions and not manager._sessions[key].is_alive():
-            del manager._sessions[key]
-        return f"Error: {e}"
+        data = await reader.read(100 * 1024 * 1024)
+        request = json.loads(data.decode())
+
+        command = request.get("command")
+        response = {}
+
+        if command == "eval":
+            code = request["code"]
+            env_path = request.get("env_path")
+            timeout = request.get("timeout")
+
+            if timeout is None:
+                effective_timeout = None if PKG_PATTERN.search(code) else DEFAULT_TIMEOUT
+            else:
+                effective_timeout = timeout if timeout > 0 else None
+
+            try:
+                session = await manager.get_or_create(env_path)
+                output = await session.execute(code, timeout=effective_timeout)
+                response = {"status": "ok", "output": output if output else "(no output)"}
+            except RuntimeError as e:
+                key = manager._key(env_path)
+                if key in manager._sessions and not manager._sessions[key].is_alive():
+                    del manager._sessions[key]
+                response = {"status": "error", "output": str(e)}
+
+        elif command == "restart":
+            env_path = request.get("env_path")
+            await manager.restart(env_path)
+            response = {"status": "ok", "output": "Session restarted. A fresh session will start on next eval."}
+
+        elif command == "list":
+            sessions = manager.list_sessions()
+            response = {"status": "ok", "sessions": sessions}
+
+        elif command == "shutdown":
+            response = {"status": "ok", "output": "Daemon shutting down"}
+            writer.write(json.dumps(response).encode())
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+            if shutdown_event:
+                shutdown_event.set()
+            return
+
+        else:
+            response = {"status": "error", "output": f"Unknown command: {command}"}
+
+        writer.write(json.dumps(response).encode())
+        await writer.drain()
+    except Exception as e:
+        error_response = {"status": "error", "output": str(e)}
+        writer.write(json.dumps(error_response).encode())
+        await writer.drain()
+    finally:
+        writer.close()
+        await writer.wait_closed()
 
 
-@mcp.tool()
-async def julia_restart(env_path: str | None = None) -> str:
-    """Restart a Julia session, clearing all state.
-
-    IMPORTANT: Restarting is slow and loses all session state. Very rarely needed.
-    Revise.jl is loaded automatically in every session, so code changes to loaded packages are picked up without restarting.
-    Only restart as a last resort when the session is truly broken, or code changes that Revise cannot fix.
-    Do NOT restart just because source files were edited between script or test runs — Revise picks up those changes automatically.
-
-    Args:
-        env_path: Environment to restart. If omitted, restarts the temporary session.
-    """
-    await manager.restart(env_path)
-    return "Session restarted. A fresh session will start on next julia_eval call."
-
-
-@mcp.tool()
-async def julia_list_sessions() -> str:
-    """List all active Julia sessions and their environments."""
-    sessions = manager.list_sessions()
-    if not sessions:
-        return "No active Julia sessions."
-    lines = []
-    for s in sessions:
-        status = "alive" if s["alive"] else "dead"
-        label = f"{s['env_path']} (temp)" if s["temp"] else s["env_path"]
-        log = f" log={s['log_file']}" if "log_file" in s else ""
-        lines.append(f"  {label}: {status}{log}")
-    return "Active Julia sessions:\n" + "\n".join(lines)
-
-
-def main():
-    global manager
+async def async_main():
     julia_args = tuple(sys.argv[1:]) if len(sys.argv) > 1 else DEFAULT_JULIA_ARGS
     manager = SessionManager(julia_args=julia_args)
-    print(f"Julia MCP log directory: {manager._log_dir}", file=sys.stderr)
-    mcp.run(transport="stdio")
+    shutdown_event = asyncio.Event()
 
+    if SOCKET_PATH.exists():
+        SOCKET_PATH.unlink()
+
+    server = await asyncio.start_unix_server(
+        lambda r, w: handle_client(r, w, manager, shutdown_event),
+        str(SOCKET_PATH)
+    )
+
+    print(f"Julia daemon started", file=sys.stderr)
+    print(f"Socket: {SOCKET_PATH}", file=sys.stderr)
+    print(f"Logs: {manager._log_dir}", file=sys.stderr)
+
+    def handle_signal():
+        shutdown_event.set()
+
+    loop = asyncio.get_event_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, handle_signal)
+
+    async with server:
+        serve_task = asyncio.create_task(server.serve_forever())
+        shutdown_task = asyncio.create_task(shutdown_event.wait())
+
+        done, pending = await asyncio.wait(
+            [serve_task, shutdown_task],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+
+        for task in pending:
+            task.cancel()
+
+        server.close()
+        await server.wait_closed()
+        await manager.shutdown()
+
+def main():
+    asyncio.run(async_main())
 
 if __name__ == "__main__":
     main()

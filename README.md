@@ -1,160 +1,83 @@
-# julia-mcp
+# julia-daemon
 
-MCP server that gives AI assistants access to efficient Julia code execution. Avoids Julia's startup and compilation costs by keeping sessions alive across calls, and persists state (variables, functions, loaded packages) between them — so each iteration is fast.
+This is a fork of [julia-mcp](https://github.com/aplavin/julia-mcp) that turns it into a daemon. See [this](https://mariozechner.at/posts/2025-11-02-what-if-you-dont-need-mcp/) link for why you might want to do that.
+
+More generally, this package gives you a deamon for running Julia code in persistent REPL sessions. This avoids Julia's startup and compilation costs by keeping sessions alive across calls, and persists state (variables, functions, loaded packages) between them — so each iteration is fast.
 
 - Sessions start on demand, persist state between calls, and recover from crashes — no manual management
 - Each project directory gets its own isolated Julia process
-- Pure stdio transport — no open ports or sockets
+- Simple client-server architecture using Unix sockets
 
+## Components
 
-## Tools
-
-- **julia_eval(code, env_path?, timeout?)** — execute Julia code in a persistent session. `env_path` sets the Julia project directory (omit for a temporary session). `timeout` defaults to 60s and is auto-disabled for `Pkg` operations.
-- **julia_restart(env_path?)** — restart a session, clearing all state. If `env_path` is omitted, restarts the temporary session.
-- **julia_list_sessions** — list active sessions and their status
+- **julia-server** — daemon that manages Julia sessions
+- **julia-eval** — client script to execute Julia code
 
 ## Requirements
 
-- [uv](https://docs.astral.sh/uv/) (you might already have it installed)
+- Python 3.10+
 - Julia – any version, `julia` binary must be in `PATH`
   - Recommended packages – used automatically if available in the global environment:
   - [Revise.jl](https://github.com/timholy/Revise.jl) - to pick code changes up without restarting
   - [TestEnv.jl](https://github.com/JuliaTesting/TestEnv.jl) — to properly activate test environment when `env_path` points to `/test/`
 
-The server itself is written in Python since the Python MCP protocol implementation is very mature.
+## Quick Start
 
+First, you'll need to start the daemon with the `julia-server` command. You could make a systemd service on linux or a launchd service on macOS. 
 
-# Usage
-
-First, clone the repository:
-
-```bash
-cd /any_directory
-git clone https://github.com/aplavin/julia-mcp.git
-```
-Then register the server with your client of choice (see below).
-
-That's it! Your AI assistant can now execute Julia code more efficiently, saving of TTFX.
-
-### Claude Code
-
-User-wide (recommended — makes Julia available in all projects):
+Once the server is running, you can execute Julia code using the `julia-eval` command.
 
 ```bash
-claude mcp add --scope user julia -- uv run --directory /any_directory/julia-mcp python server.py
+# Direct code argument
+julia-eval "println(1 + 1)"
+
+# From stdin
+echo "println(1 + 1)" | julia-eval
+
+# With project environment
+julia-eval --env-path /path/to/project "using MyPackage; foo()"
+
+# With custom timeout
+julia-eval --timeout 120 "expensive_computation()"
+
+# Restart a session
+julia-eval --restart --env-path /path/to/project
+
+# Shutdown daemon
+julia-eval --shutdown
 ```
 
-Project-scoped (only available in the current project):
+## Options
 
-```bash
-claude mcp add --scope project julia -- uv run --directory /any_directory/julia-mcp python server.py
-```
-
-<details>
-<summary>Custom Julia CLI arguments</summary>
-
-Append Julia flags after `server.py` to override the defaults (`--startup-file=no --threads=auto`):
-
-```bash
-claude mcp add --scope user julia -- uv run --directory /any_directory/julia-mcp python server.py --threads=1 --startup-file=yes
-```
-</details>
-
-### Claude Desktop
-
-Add to `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "julia": {
-      "command": "uv",
-      "args": ["run", "--directory", "/any_directory/julia-mcp", "python", "server.py"]
-    }
-  }
-}
-```
-
-<details>
-<summary>Custom Julia CLI arguments</summary>
-
-Append Julia flags after `server.py` to override the defaults (`--startup-file=no --threads=auto`):
-
-```json
-{
-  "mcpServers": {
-    "julia": {
-      "command": "uv",
-      "args": ["run", "--directory", "/any_directory/julia-mcp", "python", "server.py", "--threads=1", "--startup-file=yes"]
-    }
-  }
-}
-```
-</details>
-
-### Codex CLI
-
-User-wide — makes Julia available in all projects: 
-```
-codex mcp add julia -- uv run --directory /any_directory/julia-mcp server.py
-```
-
-<details>
-<summary>Custom Julia CLI arguments</summary>
-
-Append Julia flags after `server.py` to override the defaults (`--startup-file=no --threads=auto`):
-
-```
-codex mcp add julia -- uv run --directory /any_directory/julia-mcp server.py --threads=1 --startup-file=yes
-```
-</details>
-
-### VS Code Copilot
-
-Add to `.vscode/settings.json`:
-
-```json
-{
-  "mcp": {
-    "servers": {
-      "julia": {
-        "command": "uv",
-        "args": ["run", "--directory", "/path/to/julia-mcp", "python", "server.py"]
-      }
-    }
-  }
-}
-```
-
-<details>
-<summary>Custom Julia CLI arguments</summary>
-
-Append Julia flags after `server.py` to override the defaults (`--startup-file=no --threads=auto`):
-
-```json
-{
-  "mcp": {
-    "servers": {
-      "julia": {
-        "command": "uv",
-        "args": ["run", "--directory", "/path/to/julia-mcp", "python", "server.py", "--threads=1", "--startup-file=yes"]
-      }
-    }
-  }
-}
-```
-</details>
+- `code` — Julia code to evaluate (or read from stdin if omitted)
+- `--env-path PATH` — Julia project directory path (omit for temporary environment)
+- `--timeout SECONDS` — Timeout in seconds (default: 60, 0 for no timeout, auto-disabled for Pkg operations)
+- `--restart` — Restart the session
+- `--list` — List active sessions
+- `--shutdown` — Shutdown the daemon
 
 ## Details
 
-- Each unique `env_path` gets its own isolated Julia session. Omitting `env_path` uses a temporary session that is cleaned up on MCP shutdown.
+- Each unique `env_path` gets its own isolated Julia session. Omitting `env_path` uses a temporary session that is cleaned up on daemon shutdown.
 - If `env_path` ends in `/test/`, the parent directory is used as the project and `TestEnv` is activated automatically. For this to work, `TestEnv` must be installed in the base environment.
 - Julia is launched with `--threads=auto` and `--startup-file=no` by default. Pass custom Julia CLI flags after `server.py` to override these defaults entirely.
+- The daemon communicates via Unix socket at `/tmp/julia-daemon.sock`
+- Session logs are stored in a temporary directory printed at daemon startup
 
+## Examples
 
-## Alternatives
+Persistent state between calls:
 
-Other projects that give AI agents access to Julia:
+```bash
+julia-eval "x = 42"
+julia-eval "println(x)"  # prints 42
+```
 
-- [MCPRepl.jl](https://github.com/hexaeder/MCPRepl.jl) and [REPLicant.jl](https://github.com/MichaelHatherly/REPLicant.jl) require you to manually start and manage Julia sessions. `julia-mcp` handles this automatically.
-- [DaemonConductor.jl](https://github.com/tecosaur/DaemonConductor.jl) (linux only) runs Julia scripts, but calls are independent and don't share variables. `julia-mcp` retains state between calls.
+Multiple sessions (different environments are isolated):
+
+```bash
+julia-eval --env-path ~/project1 "x = 1"
+julia-eval --env-path ~/project2 "x = 2"
+julia-eval --env-path ~/project1 "println(x)"  # prints 1
+julia-eval --env-path ~/project2 "println(x)"  # prints 2
+```
