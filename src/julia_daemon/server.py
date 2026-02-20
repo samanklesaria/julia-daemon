@@ -126,7 +126,9 @@ async def execute_code(session, code, timeout):
 
         hex_encoded = code.encode().hex()
         wrapped = (
-            f'include_string(Main, String(hex2bytes("{hex_encoded}")))'
+            f'let __result = include_string(Main, String(hex2bytes("{hex_encoded}"))); '
+            f'__result === nothing ? nothing : show(stdout, MIME("text/plain"), __result); '
+            f'end'
         )
         return await execute_raw(session["process"], session["sentinel"], wrapped, timeout)
 

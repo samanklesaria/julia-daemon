@@ -28,11 +28,11 @@ First, you'll need to start the daemon with the `julia-server` command. You coul
 Once the server is running, you can execute Julia code using the `julia-eval` command.
 
 ```bash
-# Direct code argument
-julia-eval "println(1 + 1)"
+# Direct code argument (auto-displays result like REPL)
+julia-eval "1 + 1"
 
 # From stdin
-echo "println(1 + 1)" | julia-eval
+echo "1 + 1" | julia-eval
 
 # With project environment
 julia-eval --env-path /path/to/project "using MyPackage; foo()"
@@ -70,7 +70,7 @@ Persistent state between calls:
 
 ```bash
 julia-eval "x = 42"
-julia-eval "println(x)"  # prints 42
+julia-eval "x"  # displays 42
 ```
 
 Multiple sessions (different environments are isolated):
@@ -78,6 +78,6 @@ Multiple sessions (different environments are isolated):
 ```bash
 julia-eval --env-path ~/project1 "x = 1"
 julia-eval --env-path ~/project2 "x = 2"
-julia-eval --env-path ~/project1 "println(x)"  # prints 1
-julia-eval --env-path ~/project2 "println(x)"  # prints 2
+julia-eval --env-path ~/project1 "x"  # displays 1
+julia-eval --env-path ~/project2 "x"  # displays 2
 ```

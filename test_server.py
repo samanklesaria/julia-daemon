@@ -45,37 +45,37 @@ async def manager():
 
 class TestJuliaSession:
     async def test_basic_eval(self, session):
-        result = await execute_code(session, "println(1 + 1)", timeout=30.0)
+        result = await execute_code(session, "1 + 1", timeout=30.0)
         assert result == "2"
 
     async def test_variable_persistence(self, session):
         await execute_code(session, "x = 42", timeout=30.0)
-        result = await execute_code(session, "println(x + 1)", timeout=30.0)
+        result = await execute_code(session, "x + 1", timeout=30.0)
         assert result == "43"
 
-    async def test_println(self, session):
-        result = await execute_code(session, 'println("hello world")', timeout=30.0)
-        assert result == "hello world"
+    async def test_string_result(self, session):
+        result = await execute_code(session, '"hello world"', timeout=30.0)
+        assert "hello world" in result
 
     async def test_multiline(self, session):
-        code = "function foo(x)\n    x * 2\nend\nprintln(foo(21))"
+        code = "function foo(x)\n    x * 2\nend\nfoo(21)"
         result = await execute_code(session, code, timeout=30.0)
         assert "42" in result
 
     async def test_multi_expression(self, session):
-        result = await execute_code(session, "a = 1\nb = 2\nprintln(a + b)", timeout=30.0)
+        result = await execute_code(session, "a = 1\nb = 2\na + b", timeout=30.0)
         assert result.strip() == "3"
 
-    async def test_no_auto_display(self, session):
-        result = await execute_code(session, "1 + 2\nprint(7)\n5 + 6", timeout=30.0)
+    async def test_println_still_works(self, session):
+        result = await execute_code(session, "print(7)", timeout=30.0)
         assert result == "7"
 
     async def test_using_import(self, session):
-        result = await execute_code(session, "using Statistics\nprintln(mean([1, 2, 3]))", timeout=30.0)
+        result = await execute_code(session, "using Statistics\nmean([1, 2, 3])", timeout=30.0)
         assert result == "2.0"
 
     async def test_macro_after_import(self, session):
-        code = "using Test\n@test 1 == 1\nprintln(\"ok\")"
+        code = "using Test\n@test 1 == 1\n\"ok\""
         result = await execute_code(session, code, timeout=60.0)
         assert "ok" in result
 
@@ -86,27 +86,27 @@ class TestJuliaSession:
 
     async def test_error_does_not_kill_session(self, session):
         await execute_code(session, 'error("boom")', timeout=30.0)
-        result = await execute_code(session, "println(1 + 1)", timeout=30.0)
+        result = await execute_code(session, "1 + 1", timeout=30.0)
         assert result == "2"
 
     async def test_nothing_result(self, session):
-        result = await execute_code(session, 'println("hi")', timeout=30.0)
-        assert "hi" in result
+        result = await execute_code(session, 'nothing', timeout=30.0)
+        assert result == ""
 
     async def test_large_output(self, session):
-        result = await execute_code(session, "println(collect(1:100))", timeout=30.0)
+        result = await execute_code(session, "collect(1:100)", timeout=30.0)
         assert "1" in result
         assert "100" in result
 
     async def test_huge_single_line(self, session):
         n = 1_000_000
-        result = await execute_code(session, f'print("a"^{n})', timeout=30.0)
-        assert len(result) == n
+        result = await execute_code(session, f'"a"^{n}', timeout=30.0)
+        assert len(result) >= n
 
     async def test_huge_single_line_then_normal(self, session):
         n = 1_000_000
-        await execute_code(session, f'print("a"^{n})', timeout=30.0)
-        result = await execute_code(session, "println(1 + 1)", timeout=30.0)
+        await execute_code(session, f'"a"^{n}', timeout=30.0)
+        result = await execute_code(session, "1 + 1", timeout=30.0)
         assert result == "2"
 
     async def test_huge_single_line_then_restart(self, manager):
@@ -114,10 +114,10 @@ class TestJuliaSession:
         try:
             s = await start_julia_session(tmpdir, ("--startup-file=no", "--threads=auto"))
             n = 1_000_000
-            await execute_code(s, f'print("a"^{n})', timeout=30.0)
+            await execute_code(s, f'"a"^{n}', timeout=30.0)
             await kill_session(s)
             s = await start_julia_session(tmpdir, ("--startup-file=no", "--threads=auto"))
-            result = await execute_code(s, "println(1 + 1)", timeout=30.0)
+            result = await execute_code(s, "1 + 1", timeout=30.0)
             assert result == "2"
             await kill_session(s)
         finally:
@@ -164,7 +164,7 @@ class TestJuliaSession:
             s["process"].kill()
             await s["process"].wait()
             with pytest.raises(RuntimeError, match="died"):
-                await execute_code(s, "println(1)", timeout=30.0)
+                await execute_code(s, "1", timeout=30.0)
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -183,14 +183,14 @@ class TestJuliaSession:
 
             s = await start_julia_session(tmpdir, ("--startup-file=no", "--threads=auto"))
             await execute_code(s, "using MyMod", timeout=30.0)
-            result = await execute_code(s, "println(MyMod.foo())", timeout=30.0)
+            result = await execute_code(s, "MyMod.foo()", timeout=30.0)
             assert result == "1"
 
             with open(module_file, "w") as f:
                 f.write("module MyMod\nfoo() = 2\nend\n")
 
             await asyncio.sleep(0.5)
-            result = await execute_code(s, "println(MyMod.foo())", timeout=30.0)
+            result = await execute_code(s, "MyMod.foo()", timeout=30.0)
             assert result == "2"
 
             await kill_session(s)
@@ -224,8 +224,8 @@ class TestSessionManager:
             await execute_code(s1, "x = 1", timeout=30.0)
             await execute_code(s2, "x = 2", timeout=30.0)
 
-            r1 = await execute_code(s1, "println(x)", timeout=30.0)
-            r2 = await execute_code(s2, "println(x)", timeout=30.0)
+            r1 = await execute_code(s1, "x", timeout=30.0)
+            r2 = await execute_code(s2, "x", timeout=30.0)
 
             assert r1 == "1"
             assert r2 == "2"
@@ -241,7 +241,7 @@ class TestSessionManager:
             await restart_session(tmpdir)
             s2 = await get_or_create_session(tmpdir, ("--startup-file=no", "--threads=auto"))
             assert s1 is not s2
-            result = await execute_code(s2, "try; println(x); catch e; println(e); end", timeout=30.0)
+            result = await execute_code(s2, "try; x; catch e; string(e); end", timeout=30.0)
             assert "UndefVarError" in result
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -297,7 +297,7 @@ class TestSessionManager:
             with open(os.path.join(tmpdir, "Project.toml"), "w") as f:
                 f.write('name = "TestProject"\n')
             s = await get_or_create_session(test_dir, ("--startup-file=no", "--threads=auto"))
-            result = await execute_code(s, 'println(Base.active_project())', timeout=30.0)
+            result = await execute_code(s, 'Base.active_project()', timeout=30.0)
             assert tmpdir in result
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -330,7 +330,7 @@ class TestSessionManager:
         tmpdir = tempfile.mkdtemp(prefix="julia-daemon-test-")
         try:
             s = await get_or_create_session(tmpdir, ("--startup-file=no", "--threads=auto"))
-            result = await execute_code(s, "println(Threads.nthreads())", timeout=30.0)
+            result = await execute_code(s, "Threads.nthreads()", timeout=30.0)
             assert int(result) >= 1
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -339,7 +339,7 @@ class TestSessionManager:
         tmpdir = tempfile.mkdtemp(prefix="julia-daemon-test-")
         try:
             s = await get_or_create_session(tmpdir, ("--startup-file=no", "--threads=1"))
-            result = await execute_code(s, "println(Threads.nthreads())", timeout=30.0)
+            result = await execute_code(s, "Threads.nthreads()", timeout=30.0)
             assert result == "1"
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -354,7 +354,7 @@ class TestTimeoutDetection:
         assert PKG_PATTERN.search("a = 1\nPkg.status()")
 
     def test_pkg_pattern_no_match(self):
-        assert not PKG_PATTERN.search("println(1)")
+        assert not PKG_PATTERN.search("1 + 1")
         assert not PKG_PATTERN.search("using Statistics")
         assert not PKG_PATTERN.search("pkg = 1")
         assert not PKG_PATTERN.search("mypkg = load()")
@@ -374,7 +374,7 @@ class TestClientDaemonProtocol:
         reader = asyncio.StreamReader()
         writer = MockStreamWriter()
 
-        request = {"command": "eval", "code": "println(1 + 1)", "env_path": tempfile.mkdtemp()}
+        request = {"command": "eval", "code": "1 + 1", "env_path": tempfile.mkdtemp()}
         reader.feed_data(json.dumps(request).encode())
         reader.feed_eof()
 
@@ -398,7 +398,7 @@ class TestClientDaemonProtocol:
 
         reader2 = asyncio.StreamReader()
         writer2 = MockStreamWriter()
-        request2 = {"command": "eval", "code": "println(x)", "env_path": tmpdir}
+        request2 = {"command": "eval", "code": "x", "env_path": tmpdir}
         reader2.feed_data(json.dumps(request2).encode())
         reader2.feed_eof()
         await handle_client(reader2, writer2, ("--startup-file=no", "--threads=auto"), shutdown_event)
@@ -448,7 +448,6 @@ class TestClientDaemonProtocol:
 class MockStreamWriter:
     def __init__(self):
         self.data = b""
-        self.closed = False
 
     def write(self, data):
         self.data += data
@@ -457,7 +456,7 @@ class MockStreamWriter:
         pass
 
     def close(self):
-        self.closed = True
+        pass
 
     async def wait_closed(self):
         pass
