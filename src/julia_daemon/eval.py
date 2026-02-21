@@ -42,6 +42,10 @@ def main():
     parser.add_argument("--interrupt", action="store_true", help="Send Ctrl-D to the Julia process")
 
     args = parser.parse_args()
+    if args.env_path:
+        args.env_path = str(Path(args.env_path).resolve())
+    else:
+        args.env_path = os.getcwd()
 
     if args.shutdown:
         response = send_request({"command": "shutdown"})
@@ -67,21 +71,13 @@ def main():
         sys.exit(0)
 
     if args.interrupt:
-        request = {"command": "interrupt"}
-        if args.env_path:
-            request["env_path"] = args.env_path
-        else:
-            request["env_path"] = os.getcwd()
+        request = {"command": "interrupt", "env_path": args.env_path}
         response = send_request(request)
         print(response.get("output", ""))
         sys.exit(0 if response["status"] == "ok" else 1)
 
     if args.restart:
-        request = {"command": "restart"}
-        if args.env_path:
-            request["env_path"] = str(Path(args.env_path).resolve())
-        else:
-            request["env_path"] = os.getcwd()
+        request = {"command": "restart", "env_path": args.env_path}
         response = send_request(request)
         print(response.get("output", ""))
         sys.exit(0 if response["status"] == "ok" else 1)
@@ -91,11 +87,7 @@ def main():
     else:
         code = args.code
 
-    request = {"command": "eval", "code": code}
-    if args.env_path:
-        request["env_path"] = str(Path(args.env_path).resolve())
-    else:
-        request["env_path"] = os.getcwd()
+    request = {"command": "eval", "code": code, "env_path": args.env_path}
     if args.timeout is not None:
         request["timeout"] = args.timeout
 
