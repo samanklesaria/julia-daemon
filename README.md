@@ -19,7 +19,7 @@ More generally, this package gives you a deamon for running Julia code in persis
 - Julia – any version, `julia` binary must be in `PATH`
   - Recommended packages – used automatically if available in the global environment:
   - [Revise.jl](https://github.com/timholy/Revise.jl) - to pick code changes up without restarting
-  - [TestEnv.jl](https://github.com/JuliaTesting/TestEnv.jl) — to properly activate test environment when `env_path` points to `/test/`
+
 
 ## Quick Start
 

@@ -20,58 +20,37 @@ SOCKET_PATH = Path(tempfile.gettempdir()) / "julia-daemon.sock"
 sessions = {}
 session_locks = {}
 
-def is_test_env(env_path):
-    return Path(env_path).name == "test"
-
-def get_project_path(env_path, is_test):
-    if is_test:
-        return str(Path(env_path).parent)
-    return env_path
-
-def get_init_code(is_test):
-    if is_test:
-        return "using TestEnv; TestEnv.activate()"
-    return None
-
 async def start_julia_session(env_path, julia_args):
     julia = shutil.which("julia")
     if julia is None:
         raise RuntimeError("Julia not found in PATH. Install from https://julialang.org/downloads/")
 
-    is_test = is_test_env(env_path)
-    env_dir = env_path
-    project_path = get_project_path(env_dir, is_test)
-
     sentinel = f"__JULIA_DAEMON_{uuid.uuid4().hex}__"
 
-    cmd = [julia, "-i", *julia_args, f"--project={project_path}"]
+    cmd = [julia, "-i", *julia_args, f"--project={env_path}"]
 
     process = await asyncio.create_subprocess_exec(
         *cmd,
-        cwd=env_dir,
+        cwd=env_path,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         limit=64 * 1024 * 1024,
     )
 
-    await execute_raw(process, sentinel, "", 120.0)
-    await execute_raw(process, sentinel, "using Revise, Infiltrator", 120.0)
-
-    init = get_init_code(is_test)
-    if init:
-        await execute_raw(process, sentinel, init, None)
+    await execute_raw(process, sentinel, "", 4.0)
+    await execute_raw(process, sentinel, "using Revise, Infiltrator", 4.0)
 
     return {
         "process": process,
         "sentinel": sentinel,
-        "env_dir": env_dir,
+        "env_dir": env_path,
         "lock": asyncio.Lock(),
     }
 
 async def execute_raw(process, sentinel, code, timeout):
     sentinel_cmd = f'flush(stderr); write(stdout, "\\n"); println(stdout, "{sentinel}"); flush(stdout)'
-    payload = code + "\n" + sentinel_cmd + "\n"
+    payload = "Revise.revise()\n" + code + "\n" + sentinel_cmd + "\n"
     process.stdin.write(payload.encode())
     await process.stdin.drain()
 

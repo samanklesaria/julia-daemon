@@ -183,7 +183,7 @@ class TestJuliaSession:
                 f.write("module MyMod\nfoo() = 2\nend\n")
 
             await asyncio.sleep(0.5)
-            result = await execute_code(s, "Revise.revise(); MyMod.foo()", timeout=30.0)
+            result = await execute_code(s, "MyMod.foo()", timeout=30.0)
             assert result == "2"
 
             await kill_session(s)
