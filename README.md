@@ -1,5 +1,7 @@
 # julia-daemon
 
+![](logo.png)
+
 This is a fork of [julia-mcp](https://github.com/aplavin/julia-mcp) that turns it into a daemon. See [this](https://mariozechner.at/posts/2025-11-02-what-if-you-dont-need-mcp/) link for why you might want to do that.
 
 More generally, this package gives you a deamon for running Julia code in persistent REPL sessions. This avoids Julia's startup and compilation costs by keeping sessions alive across calls, and persists state (variables, functions, loaded packages) between them — so each iteration is fast.
