@@ -89,11 +89,10 @@ julia-eval --env-path ~/project2 "x"  # displays 2
 Debugging with Infiltrator.jl:
 
 ```bash
-# In one terminal, call a function with @infiltrate
+# Call a function with @infiltrate. You'll see a notice that you're in an infiltration session,
+# but the command will complete without blocking
 julia-eval "function debug_me(x); y = x * 2; @infiltrate; return y + 1; end; debug_me(5)"
-# This will pause at @infiltrate - the command will appear to hang
 
-# In another terminal, send Ctrl-D to exit the Infiltrator context
+# To leave the session, send Ctrl-D, just like in the REPL. The original command will now complete
 julia-eval --interrupt
-# The original command will now complete
 ```
