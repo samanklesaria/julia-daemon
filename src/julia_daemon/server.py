@@ -48,9 +48,10 @@ async def start_julia_session(env_path, julia_args):
         "lock": asyncio.Lock(),
     }
 
-async def execute_raw(process, sentinel, code, timeout):
+async def execute_raw(process, sentinel, code, timeout, revise=False):
     sentinel_cmd = f'flush(stderr); write(stdout, "\\n"); println(stdout, "{sentinel}"); flush(stdout)'
-    payload = "Revise.revise()\n" + code + "\n" + sentinel_cmd + "\n"
+    prefix = "Revise.revise()\n" if revise else ""
+    payload = prefix + code + "\n" + sentinel_cmd + "\n"
     process.stdin.write(payload.encode())
     await process.stdin.drain()
 
@@ -95,7 +96,7 @@ async def execute_code(session, code, timeout):
             f'__result === nothing ? nothing : show(stdout, MIME("text/plain"), __result); '
             f'end'
         )
-        return await execute_raw(session["process"], session["sentinel"], wrapped, timeout)
+        return await execute_raw(session["process"], session["sentinel"], wrapped, timeout, revise=True)
 
 async def kill_session(session):
     if session["process"].returncode is None:
